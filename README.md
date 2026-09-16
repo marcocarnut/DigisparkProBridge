@@ -3,8 +3,9 @@
 A USB-to-UART bridge for the Digispark Pro (ATtiny167): plug it into a Linux
 computer and it appears as a serial port (`/dev/ttyACM0`) connected to the
 board's hardware UART. The UART follows the bit rate you set on the port, and
-from 9600 to 76800 bps it was tested to lose nothing, in both directions at
-once.
+from 9600 up to 57600 bps -- the fastest standard rate -- it was tested to
+lose nothing, in both directions at once. 76800 bps works too, and is the
+real ceiling, but it is a nonstandard rate that most programs cannot ask for.
 
 It uses the ATtiny167's LIN/UART peripheral in UART mode for the serial side
 and [DigiCDCFast](https://github.com/marcocarnut/DigiCDCFast) for the USB
@@ -17,9 +18,10 @@ side.
   samples per bit, and the bridge picks the combination with the smallest
   error: 0.44% at 57600 bps, where the core's `Serial` (always 16 samples per
   bit) is 3.5% off.
-- **Lossless up to 76800 bps** in both directions at once, at the full
-  8000 bytes/s low-speed USB allows (details below). 76800 bps is the last
-  rate that fits: it needs 7680 bytes/s of the 8000.
+- **Lossless up to 57600 bps** in both directions at once, at the full
+  8000 bytes/s low-speed USB allows (details below), and up to 76800 bps if
+  you can get your programs to ask for a nonstandard rate: that is the last
+  one that fits, needing 7680 bytes/s of the 8000. 115200 bps cannot work.
 - **Reflashing without replugging:** setting the port to 134 bps
   (`stty -F /dev/ttyACM0 134`) jumps to the micronucleus bootloader.
 - 8N1 only; no hardware flow control lines.

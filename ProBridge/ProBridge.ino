@@ -96,6 +96,9 @@ static void receive()  // interrupts must be off, or this must be the handler
 //
 // Assembler, and only the registers V-USB has saved: r0, r16 to r22, Y and
 // the flags. Short, too: a packet may be arriving as it runs.
+#if !USB_CFG_TRANSACTION_END_HOOK
+#error "the bridge needs USB_CFG_TRANSACTION_END_HOOK in DigiCDCFast's usbconfig.h"
+#endif
 extern "C" void usbTransactionEnd() __attribute__((naked, used));
 void usbTransactionEnd()
 {
