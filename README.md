@@ -3,7 +3,7 @@
 A USB-to-UART bridge for the Digispark Pro (ATtiny167): plug it into a Linux
 computer and it appears as a serial port (`/dev/ttyACM0`) connected to the
 board's hardware UART. The UART follows the bit rate you set on the port, and
-from 9600 to 57600 bps it was tested to lose nothing, in both directions at
+from 9600 to 76800 bps it was tested to lose nothing, in both directions at
 once.
 
 It uses the ATtiny167's LIN/UART peripheral in UART mode for the serial side
@@ -17,8 +17,9 @@ side.
   samples per bit, and the bridge picks the combination with the smallest
   error: 0.44% at 57600 bps, where the core's `Serial` (always 16 samples per
   bit) is 3.5% off.
-- **Lossless up to 57600 bps** in both directions at once, at the full
-  8000 bytes/s low-speed USB allows (details below).
+- **Lossless up to 76800 bps** in both directions at once, at the full
+  8000 bytes/s low-speed USB allows (details below). 76800 bps is the last
+  rate that fits: it needs 7680 bytes/s of the 8000.
 - **Reflashing without replugging:** setting the port to 134 bps
   (`stty -F /dev/ttyACM0 134`) jumps to the micronucleus bootloader.
 - 8N1 only; no hardware flow control lines.
@@ -81,17 +82,30 @@ host controller, each direction measured separately and both at once
 | 38400 | 100000 | CH340 | intact | intact |
 | 57600 | 100000 | FT232R | intact | intact (3 runs) |
 | 57600 | 200000 | FT232R | intact | intact |
+| 76800 | 100000 | FT232R | intact | intact |
 
-Nothing is lost at 57600 bps in either direction any more, with the full
+Nothing is lost at any of these rates in either direction, with the full
 8-byte USB packets; see [Collecting the byte in
 time](#collecting-the-byte-in-time) for how. Earlier versions lost 0.33% of
-the bytes travelling to the host when both directions ran at once.
+the bytes travelling to the host at 57600 bps when both directions ran at
+once, and could not do 76800 bps at all.
 
-Sending is slower than the line rate, though, and always has been: 4998 of
-5757 bytes/s at 57600 bps, 3000 of 3841 at 38400. The UART transmitter holds
-one byte, finishes it while the USB interrupt still has the processor, and
-waits to be handed the next one, so the line has gaps. Nothing is lost by
-it; it only takes longer.
+Sending runs a little under the line rate, in both directions at once or
+alone:
+
+| Bit rate | Line rate | The bridge sends at |
+|----------|-----------|---------------------|
+| 9600 | 960 | 867 bytes/s |
+| 19200 | 1921 | 1714 bytes/s |
+| 38400 | 3841 | 3332 bytes/s |
+| 57600 | 5757 | 4998 bytes/s |
+| 76800 | 7680 | 6494 bytes/s |
+
+Nothing is lost by it, it only takes longer, and it is not the bridge running
+out of data to send: the counters say the transmitter found its buffer empty
+once per transfer, at the end. Each byte takes about one bit time more than
+its ten, which is the LIN/UART's own spacing between bytes, plus some 10 µs
+of waiting to be handed the next one.
 
 PPP between two hosts over the bridge (`pppd` at both ends, MTU/MRU 296,
 `novj`), with a 410 kB file going each way over TCP at the same time: at
@@ -121,6 +135,12 @@ tail live in two general-purpose I/O registers, which one instruction
 reaches. The handler still collects most bytes -- the hook only catches the
 ones that would not have waited.
 
+The same hook hands the transmitter its next byte, for the same reason in
+reverse: it holds one byte, and nobody refills it while the USB interrupt has
+the processor. That only shows above 38400 bps, where a byte takes less time
+than a run of transactions: it is worth 11% at 38400 bps and 8% at 76800, and
+nothing at all at 57600.
+
 It is called on every transaction and not only when the next packet is
 already arriving. Calling it only in that case seems the thriftier choice and
 is far worse than no hook at all: the bridge's own handler then stays pending
@@ -141,15 +161,15 @@ supports.
 
 ## Limits
 
-- **Sending runs below the line rate**, 4998 of 5757 bytes/s at 57600 bps and
-  3000 of 3841 at 38400: the UART transmitter waits to be handed its next
-  byte until the USB interrupt gives the processor back. Nothing is lost, it
-  just takes longer. The same hook that collects received bytes could refill
-  the transmitter, but that one races with the handler's transmit section,
-  which the receive side avoids by testing and reading with interrupts off.
-- **Above 57600 bps** is untested. 76800 bps needs 7680 bytes/s, within what
-  USB carries, but a byte must then be collected within 130 µs, less than a
-  single USB transaction with 8-byte packets.
+- **Sending runs at about 87% of the line rate** (see the table under
+  [Results](#results)). Nothing is lost by it; each byte just takes about one
+  bit time longer than its ten.
+- **Above 76800 bps is impossible**, not merely untested: 115200 bps needs
+  11520 bytes/s and low-speed USB carries 8000. 76800 bps works, though a
+  received byte must be collected within 130 µs there, less than a run of USB
+  transactions takes. Linux has no `B76800` constant, so `stty` and Python's
+  `termios` refuse the rate; `bridge_test.py` sets it through `TCSETS2`, and
+  a program that wants it has to do the same.
 - **8000 bytes/s** is the most low-speed USB carries per direction, so UART
   input faster than that (above about 76800 bps, sent continuously) overflows
   the bridge's buffer.
@@ -176,6 +196,7 @@ S n0079c o0000 f0000 r0000
 | `o` | bytes the UART lost before anyone came for them: receive overruns |
 | `f` | framing errors |
 | `r` | bytes dropped because the receive ring was full |
+| `s` | times the transmitter stopped because there was nothing left to send |
 
 All are 16-bit and wrap silently. `bridge_test.py --stats` prints them after
 each transfer. Set `STATS` to 0 at the top of `ProBridge.ino` to leave the

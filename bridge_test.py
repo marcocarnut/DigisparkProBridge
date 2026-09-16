@@ -17,32 +17,46 @@ import os
 import re
 import random
 import select
+import struct
 import termios
 import time
 import tty
+
+# Rates with no Bxxx constant (76800, say) go through Linux's TCSETS2, which
+# takes the number itself once the speed field says BOTHER.
+TCGETS2, TCSETS2, BOTHER, CBAUD = 0x802C542A, 0x402C542B, 0o010000, 0o010017
+TERMIOS2 = "IIII B 19s II".replace(" ", "")
+
+
+def set_speed(fd, baud):
+    speed = getattr(termios, f"B{baud}", None)
+    if speed is not None:
+        attrs = termios.tcgetattr(fd)
+        attrs[4] = attrs[5] = speed
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        return
+    import fcntl
+    buf = fcntl.ioctl(fd, TCGETS2, bytes(struct.calcsize(TERMIOS2)))
+    iflag, oflag, cflag, lflag, line, cc, _, _ = struct.unpack(TERMIOS2, buf)
+    cflag = (cflag & ~CBAUD) | BOTHER
+    fcntl.ioctl(fd, TCSETS2, struct.pack(TERMIOS2, iflag, oflag, cflag, lflag,
+                                         line, cc, baud, baud))
 
 
 def open_port(path, baud):
     fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     tty.setraw(fd)
     attrs = termios.tcgetattr(fd)
-    speed = getattr(termios, f"B{baud}")
-    attrs[4] = attrs[5] = speed
     attrs[2] &= ~termios.CRTSCTS
     attrs[2] |= termios.CLOCAL | termios.CREAD
     termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    set_speed(fd, baud)
     return fd
 
 
 def drain(fd, quiet=0.3):
     while select.select([fd], [], [], quiet)[0]:
         os.read(fd, 4096)
-
-
-def set_speed(fd, baud):
-    attrs = termios.tcgetattr(fd)
-    attrs[4] = attrs[5] = getattr(termios, f"B{baud}")
-    termios.tcsetattr(fd, termios.TCSANOW, attrs)
 
 
 def stats(fd, baud, stats_baud=110):

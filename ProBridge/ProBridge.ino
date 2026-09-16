@@ -10,8 +10,9 @@
   Setting the port to 134 bps (stty -F /dev/ttyACM0 134) jumps to the
   micronucleus bootloader, for reflashing without replugging.
 
-  Low-speed USB carries at most 8000 bytes/s, so UART input faster than that
-  (above about 76800 bps, sent continuously) overflows the receive buffer.
+  Rates from 9600 to 76800 bps were tested to lose nothing in both directions
+  at once. 76800 bps is the last that fits: it needs 7680 of the 8000 bytes/s
+  low-speed USB carries, and anything faster overflows the receive buffer.
 */
 
 #include <DigiCDCFast.h>
@@ -20,9 +21,10 @@
 // for less time, which the LIN/UART's single spare byte needs at high bit
 // rates, but carry less: one packet per millisecond each way, so 8 bytes
 // gives 8000 bytes/s, 6 gives 6000 (57600 bps needs 5760). Measured with an
-// FT232R, 100 kB in both directions at once at 57600 bps, bytes lost on the
-// way to the host: 8 bytes 0.33%, 7 bytes 0.16%, 6 bytes 0.11%. Anything at
-// 38400 bps or below is lossless either way.
+// FT232R, 100 kB in both directions at once, nothing is lost at any rate up
+// to 76800 bps with 8-byte packets, which usbTransactionEnd() below is what
+// makes possible; smaller packets are for sketches whose own timing cannot
+// wait ~110 us for the processor.
 #ifndef USB_PACKET_SIZE
 #define USB_PACKET_SIZE 8
 #endif
@@ -58,6 +60,7 @@ static struct {
   uint16_t overruns;  // o: bytes the UART lost before anyone came for them
   uint16_t framing;   // f: framing errors
   uint16_t dropped;   // r: bytes dropped because the ring was full
+  uint16_t starved;   // s: times the transmitter stopped, with nothing to send
 } stats;
 #define COUNT(counter) (stats.counter++)
 #else
@@ -85,33 +88,60 @@ static void receive()  // interrupts must be off, or this must be the handler
 // at the end of every transaction, and here we take the byte. It is also what
 // keeps the handler below from being pending when the driver returns, which
 // is when the next packet comes and no time to enter a handler first.
+//
+// The transmitter is handed its next byte here too, for the same reason in
+// reverse: it holds one byte, and while the USB interrupt has the processor
+// nobody refills it, so the line goes idle between bytes. That costs no data,
+// only speed, but at 57600 bps it was a sixth of the line rate.
+//
 // Assembler, and only the registers V-USB has saved: r0, r16 to r22, Y and
 // the flags. Short, too: a packet may be arriving as it runs.
 extern "C" void usbTransactionEnd() __attribute__((naked, used));
 void usbTransactionEnd()
 {
   asm volatile(
-      "        lds  r16, %[linsir]         \n"
-      "        sbrs r16, %[lrxok]          \n"
-      "        ret                         \n"  // nothing waiting
+      "        lds  r19, %[linsir]         \n"  // both flags, in one read
+      "        sbrs r19, %[lrxok]          \n"
+      "        rjmp 1f                     \n"  // nothing received
       "        lds  r16, %[lindat]         \n"  // the byte; this clears LRXOK
       "        in   r17, %[head]           \n"
       "        mov  r28, r17               \n"
       "        ldi  r29, 0                 \n"
-      "        subi r28, lo8(-(%[buf]))    \n"  // Y = rxBuf + rxHead
-      "        sbci r29, hi8(-(%[buf]))    \n"
+      "        subi r28, lo8(-(%[rxbuf]))  \n"  // Y = rxBuf + rxHead
+      "        sbci r29, hi8(-(%[rxbuf]))  \n"
       "        st   Y, r16                 \n"
       "        inc  r17                    \n"
-      "        andi r17, %[mask]           \n"
-      "        in   r16, %[tail]           \n"
+      "        andi r17, %[rxmask]         \n"
+      "        in   r16, %[rxtail]         \n"
       "        cp   r17, r16               \n"
       "        breq 1f                     \n"  // no room: drop it, as receive() does
       "        out  %[head], r17           \n"
-      "1:      ret                         \n"
+      "1:      sbrs r19, %[ltxok]          \n"  // transmitter wants the next byte?
+      "        ret                         \n"
+      "        lds  r16, %[enable]         \n"  // ... and is it running at all?
+      "        sbrs r16, %[lentxok]        \n"
+      "        ret                         \n"
+      "        lds  r16, %[txtail]         \n"
+      "        lds  r17, %[txhead]         \n"
+      "        cp   r16, r17               \n"
+      "        breq 2f                     \n"  // nothing to send: the handler stops it
+      "        mov  r28, r16               \n"
+      "        ldi  r29, 0                 \n"
+      "        subi r28, lo8(-(%[txbuf]))  \n"  // Y = txBuf + txTail
+      "        sbci r29, hi8(-(%[txbuf]))  \n"
+      "        ld   r18, Y                 \n"
+      "        sts  %[lindat], r18         \n"  // writing LINDAT clears LTXOK
+      "        inc  r16                    \n"
+      "        andi r16, %[txmask]         \n"
+      "        sts  %[txtail], r16         \n"
+      "2:      ret                         \n"
       :
       : [linsir] "i"(_SFR_MEM_ADDR(LINSIR)), [lindat] "i"(_SFR_MEM_ADDR(LINDAT)),
-        [lrxok] "I"(LRXOK), [head] "I"(_SFR_IO_ADDR(rxHead)),
-        [tail] "I"(_SFR_IO_ADDR(rxTail)), [buf] "i"(rxBuf), [mask] "M"(RX_SIZE - 1));
+        [lrxok] "I"(LRXOK), [ltxok] "I"(LTXOK), [lentxok] "I"(LENTXOK),
+        [head] "I"(_SFR_IO_ADDR(rxHead)), [rxtail] "I"(_SFR_IO_ADDR(rxTail)),
+        [rxbuf] "i"(rxBuf), [rxmask] "M"(RX_SIZE - 1), [enable] "i"(&linEnable),
+        [txbuf] "i"(txBuf), [txtail] "i"(&txTail), [txhead] "i"(&txHead),
+        [txmask] "M"(TX_SIZE - 1));
 }
 
 static void transmit(uint8_t c)
@@ -129,16 +159,19 @@ ISR(LIN_TC_vect)
   cli();
   if (LINSIR & _BV(LRXOK))
     receive();
-  sei();
+  sei();  // and again here
+  // usbTransactionEnd() hands the transmitter bytes too, so test and write
+  // together, and leave interrupts off through to the end of the handler
+  cli();
   if ((linEnable & _BV(LENTXOK)) && (LINSIR & _BV(LTXOK))) {
     if (txTail == txHead) {
       linEnable &= ~_BV(LENTXOK);  // nothing left to send
+      COUNT(starved);
     } else {
       transmit(txBuf[txTail]);
       txTail = (txTail + 1) & (TX_SIZE - 1);
     }
   }
-  cli();
   LINENIR = linEnable;
 }
 
@@ -206,6 +239,7 @@ static void printStats()
   writeHex('o', stats.overruns);
   writeHex('f', stats.framing);
   writeHex('r', stats.dropped);
+  writeHex('s', stats.starved);
   SerialUSB.write('\r');
   SerialUSB.write('\n');
   memset(&stats, 0, sizeof stats);
