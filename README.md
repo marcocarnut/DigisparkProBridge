@@ -21,7 +21,9 @@ side.
 - **Lossless up to 57600 bps** in both directions at once, at the full
   8000 bytes/s low-speed USB allows (details below), and up to 76800 bps if
   you can get your programs to ask for a nonstandard rate: that is the last
-  one that fits, needing 7680 bytes/s of the 8000. 115200 bps cannot work.
+  one whose *line rate* fits in the 8000 bytes/s. Faster rates can still be
+  set and used -- two terminals at 115200 bps talk to each other perfectly
+  well -- as long as nothing sends more than 8000 bytes/s for long.
 - **Reflashing without replugging:** setting the port to 134 bps
   (`stty -F /dev/ttyACM0 134`) jumps to the micronucleus bootloader.
 - 8N1 only; no hardware flow control lines.
@@ -166,15 +168,18 @@ supports.
 - **Sending runs at about 87% of the line rate** (see the table under
   [Results](#results)). Nothing is lost by it; each byte just takes about one
   bit time longer than its ten.
-- **Above 76800 bps is impossible**, not merely untested: 115200 bps needs
-  11520 bytes/s and low-speed USB carries 8000. 76800 bps works, though a
-  received byte must be collected within 130 µs there, less than a run of USB
-  transactions takes. Linux has no `B76800` constant, so `stty` and Python's
-  `termios` refuse the rate; `bridge_test.py` sets it through `TCSETS2`, and
-  a program that wants it has to do the same.
-- **8000 bytes/s** is the most low-speed USB carries per direction, so UART
-  input faster than that (above about 76800 bps, sent continuously) overflows
-  the bridge's buffer.
+- **8000 bytes/s** is the most low-speed USB carries per direction, and that,
+  rather than any bit rate, is the real ceiling. 76800 bps is the fastest rate
+  whose line rate fits under it, and it was tested to lose nothing both ways.
+  Above that the bit rate is still yours to set and use -- 115200 bps between
+  two terminals is fine, since neither types 11520 bytes/s -- but a sender
+  that does not stop will overrun the bridge's buffer. Hardware flow control
+  would fix that, and the bridge has none.
+- **76800 bps needs a nonstandard rate.** Linux has no `B76800` constant, so
+  `stty` and Python's `termios` refuse it; `bridge_test.py` sets it through
+  `TCSETS2`, and a program that wants it has to do the same. A received byte
+  must also be collected within 130 µs there, less than a run of USB
+  transactions takes -- which is what the hook is for.
 - Interrupt handlers on the board must never keep interrupts off for long,
   or V-USB misses USB transactions: the bridge's own LIN/UART handler masks
   itself and re-enables interrupts, for the same reason as the core fix. A
