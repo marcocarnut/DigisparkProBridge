@@ -16,6 +16,22 @@
 
 #include <DigiCDCFast.h>
 
+// USB packet size, 1 to 8 bytes. Smaller packets keep V-USB's interrupts off
+// for less time, which the LIN/UART's single spare byte needs at high bit
+// rates, but carry less: one packet per millisecond each way, so 8 bytes
+// gives 8000 bytes/s, 6 gives 6000 (57600 bps needs 5760). Measured with an
+// FT232R, 100 kB in both directions at once at 57600 bps, bytes lost on the
+// way to the host: 8 bytes 0.33%, 7 bytes 0.16%, 6 bytes 0.11%. Anything at
+// 38400 bps or below is lossless either way.
+#ifndef USB_PACKET_SIZE
+#define USB_PACKET_SIZE 8
+#endif
+#if USB_PACKET_SIZE != 8
+#include <DigiCDCDescriptor.h>
+const uchar digiCdcConfigDescriptor[DIGICDC_DESCRIPTOR_SIZE] PROGMEM =
+    DIGICDC_CONFIG_DESCRIPTOR(USB_PACKET_SIZE, USB_PACKET_SIZE);
+#endif
+
 #define BOOTLOADER_BAUD 134
 #define RX_SIZE         64  // powers of 2
 #define TX_SIZE         64

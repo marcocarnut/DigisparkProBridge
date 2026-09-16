@@ -81,6 +81,32 @@ host controller, each direction measured separately and both at once
 | 57600 | 100000 | FT232R | intact | to the adapter intact; to the host 0.33% lost (3 runs) |
 | 57600 | 100000 | CH340 | intact | intact (2 runs) |
 
+PPP between two hosts over the bridge (`pppd` at both ends, MTU/MRU 296,
+`novj`), with a 62 kB file going each way over TCP at the same time: at
+38400 bps, no frame errors at either end, ~86 kB carried each way at the
+line rate. Ping flooding both ways drops packets, as any link does when its
+queues fill, without errors.
+
+### USB packet size
+
+The losses at 57600 bps in both directions are UART receive overruns (see
+[Limits](#limits)), and they shrink with the USB packet size: each USB
+transaction keeps V-USB's interrupts off for roughly 6 us per byte it
+carries, and a byte must be collected within one byte time, 174 us at
+57600 bps. Smaller packets also carry less, one per millisecond each way,
+so the bit rate sets a floor: 57600 bps needs 5760 bytes/s.
+
+| `USB_PACKET_SIZE` | Bytes/s available | Lost to the host, 100 kB both ways at 57600 |
+|-------------------|-------------------|---------------------------------------------|
+| 8 (default) | 8000 | 0.33% |
+| 7 | 7000 | 0.16% |
+| 6 | 6000 | 0.11% |
+| 5 | 5000 | too slow for 57600 bps |
+
+Set it at the top of `ProBridge.ino` (or with `-DUSB_PACKET_SIZE=6`). It
+makes no difference at 38400 bps and below, where nothing is lost either
+way, and 6 bytes still carries 38400 bps at the line rate.
+
 ## Limits
 
 - **57600 bps in both directions** depends on the other end. The losses with
