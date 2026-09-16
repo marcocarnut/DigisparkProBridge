@@ -12,7 +12,10 @@
 
   Rates from 9600 to 76800 bps were tested to lose nothing in both directions
   at once. 76800 bps is the last that fits: it needs 7680 of the 8000 bytes/s
-  low-speed USB carries, and anything faster overflows the receive buffer.
+  low-speed USB carries. Faster rates work one direction at a time if the
+  other device obeys the RTS output on PA2, which goes high when the bridge
+  is running out of room; without it, anything sustained above 8000 bytes/s
+  overflows the receive buffer.
 */
 
 #include <DigiCDCFast.h>
@@ -34,11 +37,14 @@ const uchar digiCdcConfigDescriptor[DIGICDC_DESCRIPTOR_SIZE] PROGMEM =
     DIGICDC_CONFIG_DESCRIPTOR(USB_PACKET_SIZE, USB_PACKET_SIZE);
 #endif
 
+#define FLOW_CONTROL    1    // 1: PA2 is an RTS output, low while the bridge can take data
 #define STATS           1    // 1: 110 bps prints and clears diagnostic counters
 #define BOOTLOADER_BAUD 134
 #define STATS_BAUD      110
 #define RX_SIZE         64  // powers of 2
 #define TX_SIZE         64
+#define RTS_HIGH  (RX_SIZE - 20)  // bytes waiting at which the far end is asked to stop
+#define RTS_LOW   16              // ... and at which it may resume
 
 // The receive ring is shared with usbTransactionEnd() below, which is written
 // in assembler, so its head and tail live in two of the general-purpose I/O
@@ -279,6 +285,10 @@ static void enterBootloader()
 
 void setup()
 {
+#if FLOW_CONTROL
+  PORTA &= ~_BV(PA2);  // low: the far end may send
+  DDRA |= _BV(PA2);
+#endif
   SerialUSB.begin();
 }
 
@@ -309,6 +319,16 @@ void loop()
 
   while (((txHead + 1) & (TX_SIZE - 1)) != txTail && SerialUSB.available())
     uartWrite(SerialUSB.read());
+
+#if FLOW_CONTROL
+  // Ask the far end to pause before the ring fills, and only let it resume
+  // once there is real room again, so it isn't switched on every byte.
+  uint8_t waiting = (rxHead - rxTail) & (RX_SIZE - 1);
+  if (waiting >= RTS_HIGH)
+    PORTA |= _BV(PA2);
+  else if (waiting <= RTS_LOW)
+    PORTA &= ~_BV(PA2);
+#endif
 
   SerialUSB.refresh();
 }

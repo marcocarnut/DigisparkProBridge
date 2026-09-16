@@ -43,11 +43,11 @@ def set_speed(fd, baud):
                                          line, cc, baud, baud))
 
 
-def open_port(path, baud):
+def open_port(path, baud, crtscts=False):
     fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
     tty.setraw(fd)
     attrs = termios.tcgetattr(fd)
-    attrs[2] &= ~termios.CRTSCTS
+    attrs[2] = (attrs[2] | termios.CRTSCTS) if crtscts else (attrs[2] & ~termios.CRTSCTS)
     attrs[2] |= termios.CLOCAL | termios.CREAD
     termios.tcsetattr(fd, termios.TCSANOW, attrs)
     set_speed(fd, baud)
@@ -157,13 +157,15 @@ def main():
     ap.add_argument("--bytes", type=int, default=100000)
     ap.add_argument("--rx-only", action="store_true")
     ap.add_argument("--stats", action="store_true")
+    ap.add_argument("--crtscts", action="store_true",
+                    help="let the adapter obey the bridge's RTS line (wired to its CTS)")
     ap.add_argument("bauds", type=int, nargs="+")
     args = ap.parse_args()
     results = []
     for baud in args.bauds:
         print(f"== {baud} bps", flush=True)
         bridge = open_port(args.bridge, baud)
-        adapter = open_port(args.adapter, baud)
+        adapter = open_port(args.adapter, baud, args.crtscts)
         time.sleep(0.5)  # the bridge reconfigures its UART
         drain(bridge)
         drain(adapter)

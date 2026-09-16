@@ -24,9 +24,12 @@ side.
   one whose *line rate* fits in the 8000 bytes/s. Faster rates can still be
   set and used -- two terminals at 115200 bps talk to each other perfectly
   well -- as long as nothing sends more than 8000 bytes/s for long.
+- **RTS flow control** on PA2, so a device that obeys CTS is stopped before
+  the bridge runs out of room. With it, 115200 bps carries a file losslessly
+  one direction at a time, at the 8000 bytes/s USB allows.
 - **Reflashing without replugging:** setting the port to 134 bps
   (`stty -F /dev/ttyACM0 134`) jumps to the micronucleus bootloader.
-- 8N1 only; no hardware flow control lines.
+- 8N1 only; the only flow control line is the RTS output on PA2.
 
 ## Wiring
 
@@ -34,6 +37,7 @@ side.
 |---------------|--------------|
 | PA0 (LIN/UART RX) | TX |
 | PA1 (LIN/UART TX) | RX |
+| PA2 (RTS out) | CTS (optional, see [Flow control](#flow-control)) |
 | GND | GND |
 
 The Pro's I/O is at 5 V. Use a level shifter for 3.3 V devices, and an
@@ -152,6 +156,42 @@ through the whole run and fires the moment the driver returns, which is
 exactly when the next packet arrives, and an ordinary handler's prologue is
 long enough to make the driver miss it.
 
+### Flow control
+
+The bridge has 64 bytes to hold what it receives until USB takes it, and USB
+takes at most 8000 bytes/s. Anything sent faster for long fills that, and the
+bytes arriving next are lost: flooding it at 115200 bps with its USB port
+closed lost 118649 of 118784 bytes.
+
+PA2 prevents that, if the other device has a CTS input. The bridge holds it
+low while it can take data and raises it once 44 bytes are waiting, until the
+buffer is down to 16 again. In the same test, wired to an FT232R's CTS with
+`crtscts` set on that side, **nothing was lost**: the adapter paused after its
+own 4096 bytes were gone, and the bridge's `r` counter stayed 0.
+
+That makes rates above 76800 bps usable, within the 8000 bytes/s:
+
+| At 115200 bps, 60 kB | Result |
+|----------------------|--------|
+| adapter to bridge | intact, 7935 bytes/s |
+| bridge to adapter | intact, 7937 bytes/s |
+| both at once | 932 bytes lost and 100 corrupted on the way to the host |
+
+One direction at a time runs at the USB ceiling itself. Both at once is past
+what the board can keep up with -- and the losses are not the UART's, whose
+overrun and ring counters stay 0, but USB transactions going wrong while the
+bus is saturated in both directions and the UART interrupts 11520 times a
+second. 76800 bps is the fastest rate that works in both directions at once.
+
+Not every adapter obeys CTS: a CH340 ignored the equivalent line on the
+ATtiny85 bridge, because Linux's `ch341` driver accepts `crtscts` without
+implementing it. Set `FLOW_CONTROL` to 0 at the top of the sketch to leave
+PA2 alone (26 bytes of flash).
+
+The other direction, a device asking the *bridge* to pause, is not
+implemented, though unlike the ATtiny85 bridge this board has pins to spare
+for it.
+
 ### USB packet size
 
 `USB_PACKET_SIZE`, at the top of `ProBridge.ino` (or `-DUSB_PACKET_SIZE=6`),
@@ -171,10 +211,11 @@ supports.
 - **8000 bytes/s** is the most low-speed USB carries per direction, and that,
   rather than any bit rate, is the real ceiling. 76800 bps is the fastest rate
   whose line rate fits under it, and it was tested to lose nothing both ways.
-  Above that the bit rate is still yours to set and use -- 115200 bps between
-  two terminals is fine, since neither types 11520 bytes/s -- but a sender
-  that does not stop will overrun the bridge's buffer. Hardware flow control
-  would fix that, and the bridge has none.
+  Above that the bit rate is still yours to set and use -- 115200 bps carries
+  a file losslessly one direction at a time -- but only if the sender can be
+  stopped, which is what the RTS line on PA2 is for (see
+  [Flow control](#flow-control)). A sender that ignores it overruns the
+  bridge's buffer.
 - **76800 bps needs a nonstandard rate.** Linux has no `B76800` constant, so
   `stty` and Python's `termios` refuse it; `bridge_test.py` sets it through
   `TCSETS2`, and a program that wants it has to do the same. A received byte
@@ -218,6 +259,11 @@ counters out.
   or corrupted, with the offsets of the first mismatches, and with `--stats`
   the bridge's own counters as well. Defaults: `/dev/ttyACM0` for the bridge,
   `/dev/ttyUSB0` for the adapter, 100000 bytes.
+- `rts_test.py [--baud N] [--seconds N] [--no-crtscts]` floods the bridge's
+  UART while its USB port stays closed, so nothing drains what it receives,
+  and reports whether the adapter was stopped: it reads the bridge's RTS line
+  back through the adapter's CTS input rather than taking it on trust, and
+  then asks the bridge how many bytes it dropped.
 - `LinDuplex/` with `lin_duplex_test.py [BAUD] [SECONDS]` checks the
   LIN/UART on its own, without USB carrying the data: the board transmits a
   counting sequence while checking one it receives. It showed the LIN/UART
