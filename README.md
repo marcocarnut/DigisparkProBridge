@@ -24,14 +24,16 @@ side.
   one whose *line rate* fits in the 8000 bytes/s. Faster rates can still be
   set and used -- two terminals at 115200 bps talk to each other perfectly
   well -- as long as nothing sends more than 8000 bytes/s for long.
-- **Hardware flow control both ways:** an RTS output on PA2, so a device that
-  obeys CTS is stopped before the bridge runs out of room, and optionally a
-  CTS input on PA3, so a device that needs a moment can stop the bridge. With
-  RTS, 115200 bps carries a file losslessly one direction at a time, at the
+- **Hardware flow control both ways, if you want it:** an RTS output on PA2,
+  so a device that obeys CTS is stopped before the bridge runs out of room,
+  and a CTS input on PA3, so a device that needs a moment can stop the bridge.
+  Both are off until switched on in the sketch, each on its own. With RTS,
+  115200 bps carries a file losslessly one direction at a time, at the
   8000 bytes/s USB allows.
 - **Reflashing without replugging:** setting the port to 134 bps
   (`stty -F /dev/ttyACM0 134`) jumps to the micronucleus bootloader.
-- 8N1 only; the only flow control line is the RTS output on PA2.
+- 8N1 only; flow control is the RTS output on PA2 and the CTS input on PA3,
+  both off until switched on.
 
 ## Wiring
 
@@ -39,7 +41,7 @@ side.
 |---------------|--------------|
 | PA0 (LIN/UART RX) | TX |
 | PA1 (LIN/UART TX) | RX |
-| PA2 (RTS out) | CTS (optional, see [Flow control](#flow-control)) |
+| PA2 (RTS out) | CTS (optional, and `RTS_OUTPUT` must be set) |
 | PA3 (CTS in) | RTS (optional, and `CTS_INPUT` must be set) |
 | GND | GND |
 
@@ -166,8 +168,8 @@ takes at most 8000 bytes/s. Anything sent faster for long fills that, and the
 bytes arriving next are lost: flooding it at 115200 bps with its USB port
 closed lost 118649 of 118784 bytes.
 
-PA2 prevents that, if the other device has a CTS input. The bridge holds it
-low while it can take data and raises it once 44 bytes are waiting, until the
+PA2 prevents that, with `RTS_OUTPUT` set to 1 and the other device's CTS
+wired to it. The bridge holds it low while it can take data and raises it once 44 bytes are waiting, until the
 buffer is down to 16 again. In the same test, wired to an FT232R's CTS with
 `crtscts` set on that side, **nothing was lost**: the adapter paused after its
 own 4096 bytes were gone, and the bridge's `r` counter stayed 0.
@@ -188,8 +190,8 @@ second. 76800 bps is the fastest rate that works in both directions at once.
 
 Not every adapter obeys CTS: a CH340 ignored the equivalent line on the
 ATtiny85 bridge, because Linux's `ch341` driver accepts `crtscts` without
-implementing it. Set `FLOW_CONTROL` to 0 at the top of the sketch to leave
-PA2 alone (26 bytes of flash).
+implementing it. PA2 is left alone until `RTS_OUTPUT` is set to 1 at the top
+of the sketch (26 bytes of flash).
 
 ### The other direction: CTS
 
@@ -209,9 +211,10 @@ DigiCDCFast makes the host's transactions wait. In that same test the host
 got 2560 bytes into the bridge and was then simply blocked until the bridge
 was let go.
 
-`CTS_INPUT` is off by default because the pin is pulled up, so with nothing
-wired to it an enabled CTS input would read "wait" and the bridge would never
-send. Turn it on only along with the wire.
+Both halves are off by default and switch on independently, since either may
+be wired without the other. It matters most for CTS: the pin is pulled up, so
+an enabled CTS input with nothing wired to it reads "wait", and the bridge
+would never send a byte. Turn each on only along with its wire.
 
 ### USB packet size
 

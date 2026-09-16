@@ -10,8 +10,9 @@
   Setting the port to 134 bps (stty -F /dev/ttyACM0 134) jumps to the
   micronucleus bootloader, for reflashing without replugging.
 
-  PA2 is an RTS output, low while the bridge can take data. PA3 can be a CTS
-  input, which stops the bridge while it is high; see CTS_INPUT below.
+  PA2 can be an RTS output, low while the bridge can take data, and PA3 a CTS
+  input, which stops the bridge while it is high. Both are off until you set
+  RTS_OUTPUT or CTS_INPUT below.
 
   Rates from 9600 to 76800 bps were tested to lose nothing in both directions
   at once. 76800 bps is the last that fits: it needs 7680 of the 8000 bytes/s
@@ -40,10 +41,12 @@ const uchar digiCdcConfigDescriptor[DIGICDC_DESCRIPTOR_SIZE] PROGMEM =
     DIGICDC_CONFIG_DESCRIPTOR(USB_PACKET_SIZE, USB_PACKET_SIZE);
 #endif
 
-#define FLOW_CONTROL    1    // 1: PA2 is an RTS output, low while the bridge can take data
+// Hardware flow control, off unless you wire it, and each half on its own:
+#define RTS_OUTPUT      0    // 1: PA2 is an RTS output, low while the bridge can
+                             //    take data, high once its buffer is filling up
 #define CTS_INPUT       0    // 1: PA3 is a CTS input, and the bridge only sends
-                             //    while it is low. Off unless you wire it: the
-                             //    pin is pulled up, so unconnected means "wait".
+                             //    while it is low. The pin is pulled up, so with
+                             //    nothing wired to it the bridge would never send.
 #define STATS           1    // 1: 110 bps prints and clears diagnostic counters
 #define BOOTLOADER_BAUD 134
 #define STATS_BAUD      110
@@ -311,7 +314,7 @@ static void enterBootloader()
 
 void setup()
 {
-#if FLOW_CONTROL
+#if RTS_OUTPUT
   PORTA &= ~_BV(PA2);  // low: the far end may send
   DDRA |= _BV(PA2);
 #endif
@@ -349,7 +352,7 @@ void loop()
   while (((txHead + 1) & (TX_SIZE - 1)) != txTail && SerialUSB.available())
     uartWrite(SerialUSB.read());
 
-#if FLOW_CONTROL
+#if RTS_OUTPUT
   // Ask the far end to pause before the ring fills, and only let it resume
   // once there is real room again, so it isn't switched on every byte.
   uint8_t waiting = (rxHead - rxTail) & (RX_SIZE - 1);
