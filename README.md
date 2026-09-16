@@ -24,9 +24,11 @@ side.
   one whose *line rate* fits in the 8000 bytes/s. Faster rates can still be
   set and used -- two terminals at 115200 bps talk to each other perfectly
   well -- as long as nothing sends more than 8000 bytes/s for long.
-- **RTS flow control** on PA2, so a device that obeys CTS is stopped before
-  the bridge runs out of room. With it, 115200 bps carries a file losslessly
-  one direction at a time, at the 8000 bytes/s USB allows.
+- **Hardware flow control both ways:** an RTS output on PA2, so a device that
+  obeys CTS is stopped before the bridge runs out of room, and optionally a
+  CTS input on PA3, so a device that needs a moment can stop the bridge. With
+  RTS, 115200 bps carries a file losslessly one direction at a time, at the
+  8000 bytes/s USB allows.
 - **Reflashing without replugging:** setting the port to 134 bps
   (`stty -F /dev/ttyACM0 134`) jumps to the micronucleus bootloader.
 - 8N1 only; the only flow control line is the RTS output on PA2.
@@ -38,6 +40,7 @@ side.
 | PA0 (LIN/UART RX) | TX |
 | PA1 (LIN/UART TX) | RX |
 | PA2 (RTS out) | CTS (optional, see [Flow control](#flow-control)) |
+| PA3 (CTS in) | RTS (optional, and `CTS_INPUT` must be set) |
 | GND | GND |
 
 The Pro's I/O is at 5 V. Use a level shifter for 3.3 V devices, and an
@@ -188,9 +191,27 @@ ATtiny85 bridge, because Linux's `ch341` driver accepts `crtscts` without
 implementing it. Set `FLOW_CONTROL` to 0 at the top of the sketch to leave
 PA2 alone (26 bytes of flash).
 
-The other direction, a device asking the *bridge* to pause, is not
-implemented, though unlike the ATtiny85 bridge this board has pins to spare
-for it.
+### The other direction: CTS
+
+A device that needs the bridge to pause can say so on PA3, once `CTS_INPUT`
+is set to 1 at the top of the sketch (22 bytes of flash). While it is high
+the bridge finishes the byte it is sending and stops; `loop()` starts the
+transmitter again when it goes low. Driving an FT232R's RTS by hand, the
+bridge sent **0 bytes** while told to wait and then all 20000 of them, in
+order and intact, once let go (`cts_test.py`).
+
+Nothing needs to be told to the host, and there would be no way to tell it:
+CDC's `SERIAL_STATE` notification carries carrier, ring, break, framing,
+parity and overrun, and has no CTS bit at all. It is not needed, because USB
+provides the same back-pressure by itself: the bridge stops feeding its
+transmitter, its buffer fills, it stops taking bytes from USB, and
+DigiCDCFast makes the host's transactions wait. In that same test the host
+got 2560 bytes into the bridge and was then simply blocked until the bridge
+was let go.
+
+`CTS_INPUT` is off by default because the pin is pulled up, so with nothing
+wired to it an enabled CTS input would read "wait" and the bridge would never
+send. Turn it on only along with the wire.
 
 ### USB packet size
 
@@ -228,6 +249,27 @@ supports.
   received corrupted, and silently, since at 16 MHz V-USB has no time to
   check a CRC either.
 
+## Ideas not tried
+
+- **Service the UART from `loop()` and stop interrupting altogether.** What
+  still fails is 115200 bps in both directions at once, and the counters say
+  it is not the UART: overruns and ring drops stay 0, so the losses are USB
+  transactions going wrong. The suspect is the receive handler's prologue,
+  which runs 11520 times a second at that rate and needs only to start just
+  before a packet does to make the driver miss it -- the same mechanism that
+  made calling `usbTransactionEnd()` conditionally worse than not calling it
+  at all. With no handler there would be no prologue to collide with.
+  It would not replace the hook: while the USB interrupt has the processor
+  `loop()` does not run either, so the hook stays the only thing that can
+  reach the UART during a transaction. And it would need every path through
+  `loop()` to be shorter than a byte time, 87 µs at 115200 bps, which
+  `usbPoll()` and the loop that hands 64 bytes to USB would have to be
+  measured against.
+- **Reporting the flow control lines to the host.** There is nowhere to put
+  CTS: CDC's `SERIAL_STATE` notification carries carrier, ring, break,
+  framing, parity and overrun, and no CTS bit. The bridge acts on the pin
+  itself instead, which is what the host would have done with it anyway.
+
 ## Diagnostics
 
 Setting the port to 110 bps prints a line of counters and clears them, so a
@@ -259,6 +301,10 @@ counters out.
   or corrupted, with the offsets of the first mismatches, and with `--stats`
   the bridge's own counters as well. Defaults: `/dev/ttyACM0` for the bridge,
   `/dev/ttyUSB0` for the adapter, 100000 bytes.
+- `cts_test.py [--baud N] [--bytes N]` drives the adapter's RTS by hand --
+  rather than leaving it to the kernel's flow control, so that it tests the
+  bridge and not the two drivers -- and checks that the bridge stops while
+  told to wait and loses nothing when let go.
 - `rts_test.py [--baud N] [--seconds N] [--no-crtscts]` floods the bridge's
   UART while its USB port stays closed, so nothing drains what it receives,
   and reports whether the adapter was stopped: it reads the bridge's RTS line

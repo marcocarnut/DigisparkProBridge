@@ -10,6 +10,9 @@
   Setting the port to 134 bps (stty -F /dev/ttyACM0 134) jumps to the
   micronucleus bootloader, for reflashing without replugging.
 
+  PA2 is an RTS output, low while the bridge can take data. PA3 can be a CTS
+  input, which stops the bridge while it is high; see CTS_INPUT below.
+
   Rates from 9600 to 76800 bps were tested to lose nothing in both directions
   at once. 76800 bps is the last that fits: it needs 7680 of the 8000 bytes/s
   low-speed USB carries. Faster rates work one direction at a time if the
@@ -38,6 +41,9 @@ const uchar digiCdcConfigDescriptor[DIGICDC_DESCRIPTOR_SIZE] PROGMEM =
 #endif
 
 #define FLOW_CONTROL    1    // 1: PA2 is an RTS output, low while the bridge can take data
+#define CTS_INPUT       0    // 1: PA3 is a CTS input, and the bridge only sends
+                             //    while it is low. Off unless you wire it: the
+                             //    pin is pulled up, so unconnected means "wait".
 #define STATS           1    // 1: 110 bps prints and clears diagnostic counters
 #define BOOTLOADER_BAUD 134
 #define STATS_BAUD      110
@@ -45,6 +51,12 @@ const uchar digiCdcConfigDescriptor[DIGICDC_DESCRIPTOR_SIZE] PROGMEM =
 #define TX_SIZE         64
 #define RTS_HIGH  (RX_SIZE - 20)  // bytes waiting at which the far end is asked to stop
 #define RTS_LOW   16              // ... and at which it may resume
+
+#if CTS_INPUT
+#define maySend() (!(PINA & _BV(PA3)))
+#else
+#define maySend() true  // the compiler then drops every test of it
+#endif
 
 // The receive ring is shared with usbTransactionEnd() below, which is written
 // in assembler, so its head and tail live in two of the general-purpose I/O
@@ -158,6 +170,19 @@ static void transmit(uint8_t c)
   LINDAT = c;  // writing clears LTXOK
 }
 
+// Hand the transmitter its next byte, or stop it: when there is nothing to
+// send, and when the other device has asked us to wait. Either way loop()
+// starts it again. Interrupts must be off.
+static void transmitNext()
+{
+  if (txTail == txHead || !maySend()) {
+    linEnable &= ~_BV(LENTXOK);
+  } else {
+    transmit(txBuf[txTail]);
+    txTail = (txTail + 1) & (TX_SIZE - 1);
+  }
+}
+
 // V-USB must never wait for this handler (a delayed USB interrupt makes the
 // host's transaction fail), so it masks its own interrupts and lets others in.
 ISR(LIN_TC_vect)
@@ -173,13 +198,9 @@ ISR(LIN_TC_vect)
   // together, and leave interrupts off through to the end of the handler
   cli();
   if ((linEnable & _BV(LENTXOK)) && (LINSIR & _BV(LTXOK))) {
-    if (txTail == txHead) {
-      linEnable &= ~_BV(LENTXOK);  // nothing left to send
+    if (txTail == txHead)
       COUNT(starved);
-    } else {
-      transmit(txBuf[txTail]);
-      txTail = (txTail + 1) & (TX_SIZE - 1);
-    }
+    transmitNext();
   }
   LINENIR = linEnable;
 }
@@ -215,18 +236,23 @@ static void uartBegin(unsigned long baud)
   sei();
 }
 
+static void startTransmitter()  // interrupts must be off
+{
+  if (!(linEnable & _BV(LENTXOK)) && txTail != txHead && maySend()) {
+    transmit(txBuf[txTail]);
+    txTail = (txTail + 1) & (TX_SIZE - 1);
+    linEnable |= _BV(LENTXOK);
+    LINENIR = linEnable;
+  }
+}
+
 static void uartWrite(uint8_t c)  // the caller checks there is room
 {
   txBuf[txHead] = c;
   uint8_t sreg = SREG;
   cli();
   txHead = (txHead + 1) & (TX_SIZE - 1);
-  if (!(linEnable & _BV(LENTXOK))) {  // transmitter idle: start it
-    transmit(txBuf[txTail]);
-    txTail = (txTail + 1) & (TX_SIZE - 1);
-    linEnable |= _BV(LENTXOK);
-    LINENIR = linEnable;
-  }
+  startTransmitter();
   SREG = sreg;
 }
 
@@ -289,6 +315,9 @@ void setup()
   PORTA &= ~_BV(PA2);  // low: the far end may send
   DDRA |= _BV(PA2);
 #endif
+#if CTS_INPUT
+  PORTA |= _BV(PA3);   // input with its pull-up: unconnected reads "wait"
+#endif
   SerialUSB.begin();
 }
 
@@ -328,6 +357,12 @@ void loop()
     PORTA |= _BV(PA2);
   else if (waiting <= RTS_LOW)
     PORTA &= ~_BV(PA2);
+#endif
+
+#if CTS_INPUT
+  cli();  // pick the transmitter up again once the other device is ready
+  startTransmitter();
+  sei();
 #endif
 
   SerialUSB.refresh();
