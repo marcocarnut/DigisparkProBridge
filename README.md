@@ -85,7 +85,10 @@ PPP between two hosts over the bridge (`pppd` at both ends, MTU/MRU 296,
 `novj`), with a 62 kB file going each way over TCP at the same time: at
 38400 bps, no frame errors at either end, ~86 kB carried each way at the
 line rate. Ping flooding both ways drops packets, as any link does when its
-queues fill, without errors.
+queues fill, without errors. At 57600 bps the same test loses frames on the
+way to the host, which TCP retransmits: 83 of them per 103 kB with 8-byte
+USB packets, 50 with 6-byte ones (see below); the other direction stays
+clean. So 38400 bps is the rate to use with traffic in both directions.
 
 ### USB packet size
 
