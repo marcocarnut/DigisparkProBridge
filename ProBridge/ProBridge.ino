@@ -42,12 +42,18 @@ const uchar digiCdcConfigDescriptor[DIGICDC_DESCRIPTOR_SIZE] PROGMEM =
 #endif
 
 // Hardware flow control, off unless you wire it, and each half on its own:
+#ifndef RTS_OUTPUT
 #define RTS_OUTPUT      0    // 1: PA2 is an RTS output, low while the bridge can
                              //    take data, high once its buffer is filling up
+#endif
+#ifndef CTS_INPUT
 #define CTS_INPUT       0    // 1: PA3 is a CTS input, and the bridge only sends
                              //    while it is low. The pin is pulled up, so with
                              //    nothing wired to it the bridge would never send.
+#endif
+#ifndef STATS
 #define STATS           1    // 1: 110 bps prints and clears diagnostic counters
+#endif
 #define BOOTLOADER_BAUD 134
 #define STATS_BAUD      110
 #define RX_SIZE         64  // powers of 2

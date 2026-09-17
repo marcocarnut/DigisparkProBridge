@@ -212,9 +212,12 @@ got 2560 bytes into the bridge and was then simply blocked until the bridge
 was let go.
 
 Both halves are off by default and switch on independently, since either may
-be wired without the other. It matters most for CTS: the pin is pulled up, so
-an enabled CTS input with nothing wired to it reads "wait", and the bridge
-would never send a byte. Turn each on only along with its wire.
+be wired without the other. Switching on RTS without the wire is harmless --
+the bridge drives a pin nobody reads -- but **CTS without the wire stops the
+bridge from transmitting**: the pin is pulled up, an unconnected input reads
+"wait", and it never sends a byte, while still receiving normally. The link
+then looks half dead rather than broken. Turn each on only along with its
+wire.
 
 ### USB packet size
 
@@ -226,6 +229,10 @@ millisecond each way, so 8 bytes gives 8000 bytes/s and 6 gives 6000, against
 the 5760 that 57600 bps needs. Leave it at 8 unless something else on the
 board needs the processor sooner: nothing is lost at 8 at any rate the bridge
 supports.
+
+With the defaults the sketch uses 4506 of the 14970 bytes of flash and 391 of
+the 512 bytes of RAM; with both flow control lines, 4554; without the
+counters, 4182 and 381.
 
 ## Limits
 
@@ -293,7 +300,9 @@ S n0079c o0000 f0000 r0000
 
 All are 16-bit and wrap silently. `bridge_test.py --stats` prints them after
 each transfer. Set `STATS` to 0 at the top of `ProBridge.ino` to leave the
-counters out.
+counters out -- but measure afterwards rather than assuming it costs nothing:
+on the ATtiny85 bridge, whose transmitter times itself around its own
+handler, turning them off was enough to corrupt a byte in every 75 kB.
 
 ## Tests
 
